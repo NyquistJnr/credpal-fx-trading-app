@@ -5,9 +5,9 @@ export interface SendMailOptions {
   html?: string;
 }
 
-export interface MailProvider {
-  sendMail(options: SendMailOptions): Promise<void>;
-  getProviderName(): string;
+export abstract class MailProvider {
+  abstract sendMail(options: SendMailOptions): Promise<void>;
+  abstract getProviderName(): string;
 }
 
 export const MAIL_PROVIDER = Symbol('MAIL_PROVIDER');

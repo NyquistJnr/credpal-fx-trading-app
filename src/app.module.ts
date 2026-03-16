@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import {
   databaseConfig,
   jwtConfig,
@@ -10,6 +11,10 @@ import {
   redisConfig,
 } from './config';
 import { RedisCacheModule } from './common/services/redis-cache.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { WalletModule } from './modules/wallet/wallet.module';
+import { TransactionsModule } from './modules/transactions/transactions.module';
+import { FxModule } from './modules/fx/fx.module';
 
 @Module({
   imports: [
@@ -42,6 +47,16 @@ import { RedisCacheModule } from './common/services/redis-cache.module';
     ]),
 
     RedisCacheModule,
+    AuthModule,
+    WalletModule,
+    TransactionsModule,
+    FxModule,
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}
