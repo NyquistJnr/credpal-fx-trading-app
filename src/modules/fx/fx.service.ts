@@ -34,10 +34,6 @@ export class FxService {
     this.cacheTtl = this.configService.get<number>('fx.cacheTtl') ?? 300;
   }
 
-  /**
-   * Get all supported FX rates for a base currency.
-   * Checks Redis cache first, then fetches from provider, falls back to DB.
-   */
   async getRates(baseCurrency: Currency): Promise<{
     rates: FxRateMap;
     baseCurrency: string;
@@ -47,7 +43,6 @@ export class FxService {
   }> {
     const cacheKey = `fx:rates:${baseCurrency}`;
 
-    // 1. Try Redis cache
     const cached = await this.redisCache.getJSON<CachedRateData>(cacheKey);
     if (cached) {
       this.logger.debug(`Cache hit for ${baseCurrency} rates`);
@@ -104,9 +99,6 @@ export class FxService {
     throw new FxRateUnavailableException();
   }
 
-  /**
-   * Get a single conversion rate between two currencies.
-   */
   async getRate(
     fromCurrency: Currency,
     toCurrency: Currency,
@@ -125,9 +117,6 @@ export class FxService {
     };
   }
 
-  /**
-   * Get all supported currency pairs with rates.
-   */
   async getAllSupportedRates(): Promise<
     {
       baseCurrency: string;
@@ -157,9 +146,6 @@ export class FxService {
     return results;
   }
 
-  /**
-   * Filter rate map to only include supported currencies.
-   */
   private filterSupportedCurrencies(rates: FxRateMap): FxRateMap {
     const filtered: FxRateMap = {};
     for (const currency of SUPPORTED_CURRENCIES) {
@@ -170,9 +156,6 @@ export class FxService {
     return filtered;
   }
 
-  /**
-   * Log fetched rates to the database for auditing.
-   */
   private async logRatesToDb(
     baseCurrency: string,
     rates: FxRateMap,
@@ -201,9 +184,6 @@ export class FxService {
     }
   }
 
-  /**
-   * Retrieve the most recent rates from the DB as fallback.
-   */
   private async getFallbackRatesFromDb(
     baseCurrency: string,
   ): Promise<{ rates: FxRateMap; provider: string; fetchedAt: string } | null> {
