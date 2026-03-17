@@ -2,6 +2,7 @@ import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Inject } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { generateSecureOtp } from '../../common/utils/crypto.util';
 import { User } from './entities/user.entity';
 import {
   RegisterDto,
@@ -63,7 +64,7 @@ export class AuthService {
       firstName: dto.firstName,
       lastName: dto.lastName,
       isVerified: false,
-      role: Role.USER,
+      role: Role.USER, // All users will be user by default, for now it's to just switch the role value in the DB, later will implement a seeded admin, will come back here!
     });
 
     await this.walletBalanceRepository.seedForUser(
@@ -260,7 +261,7 @@ export class AuthService {
       );
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = generateSecureOtp();
     const otpKey = `pwd_reset:${user.id}`;
     await this.redisCache.set(otpKey, otp, this.OTP_TTL);
 
@@ -319,7 +320,7 @@ export class AuthService {
   }
 
   private async generateAndSendOtp(user: User): Promise<void> {
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = generateSecureOtp();
     const otpKey = `otp:${user.id}`;
 
     await this.redisCache.set(otpKey, otp, this.OTP_TTL);

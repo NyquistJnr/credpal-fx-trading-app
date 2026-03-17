@@ -37,7 +37,7 @@ export class FundWalletHandler implements ICommandHandler<
     const { userId, currency, amount, idempotencyKey } = command;
 
     if (idempotencyKey) {
-      await this.idempotencyService.check(idempotencyKey);
+      await this.idempotencyService.acquire(idempotencyKey);
     }
 
     const queryRunner = this.dataSource.createQueryRunner();
@@ -73,8 +73,9 @@ export class FundWalletHandler implements ICommandHandler<
 
       await queryRunner.commitTransaction();
 
+      // Promote lock from "pending" -> "committed" after successful commit
       if (idempotencyKey) {
-        await this.idempotencyService.markUsed(idempotencyKey);
+        await this.idempotencyService.confirm(idempotencyKey);
       }
 
       const newBalance = DecimalUtil.toNumber(wallet.balance);
@@ -102,6 +103,12 @@ export class FundWalletHandler implements ICommandHandler<
       );
     } catch (error) {
       await queryRunner.rollbackTransaction();
+
+      // Release the lock so the client can safely retry with the same key
+      if (idempotencyKey) {
+        await this.idempotencyService.release(idempotencyKey);
+      }
+
       throw error;
     } finally {
       await queryRunner.release();

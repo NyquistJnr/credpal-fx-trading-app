@@ -53,7 +53,7 @@ export class TradeCurrencyHandler implements ICommandHandler<
     }
 
     if (idempotencyKey) {
-      await this.idempotencyService.check(idempotencyKey);
+      await this.idempotencyService.acquire(idempotencyKey);
     }
 
     const rateData = await this.fxService.getRate(fromCurrency, toCurrency);
@@ -110,7 +110,7 @@ export class TradeCurrencyHandler implements ICommandHandler<
       await queryRunner.commitTransaction();
 
       if (idempotencyKey) {
-        await this.idempotencyService.markUsed(idempotencyKey);
+        await this.idempotencyService.confirm(idempotencyKey);
       }
 
       const sourceBalance = DecimalUtil.toNumber(sourceWallet.balance);
@@ -149,6 +149,11 @@ export class TradeCurrencyHandler implements ICommandHandler<
       );
     } catch (error) {
       await queryRunner.rollbackTransaction();
+
+      if (idempotencyKey) {
+        await this.idempotencyService.release(idempotencyKey);
+      }
+
       throw error;
     } finally {
       await queryRunner.release();
