@@ -1,4 +1,4 @@
-# FX Trading App - Backend API
+# FX Trading App — Backend API
 
 A production-grade backend for an FX currency trading platform built with NestJS, TypeORM, PostgreSQL, and Redis. Users can register, verify their email, fund wallets in multiple currencies, and trade/convert currencies using real-time FX rates.
 
@@ -14,6 +14,7 @@ A production-grade backend for an FX currency trading platform built with NestJS
 - [API Documentation](#api-documentation)
 - [Key API Endpoints](#key-api-endpoints)
 - [Architecture & Design Decisions](#architecture--design-decisions)
+- [Flowcharts](#flowcharts)
 - [System Flow](#system-flow)
 - [Key Assumptions](#key-assumptions)
 - [Testing](#testing)
@@ -74,7 +75,7 @@ cp .env.example .env
 
 ---
 
-## Environment Variables (Or Checkout .env.example)
+## Environment Variables
 
 | Variable                         | Description                                | Default                              |
 | -------------------------------- | ------------------------------------------ | ------------------------------------ |
@@ -314,6 +315,20 @@ Every request gets an `X-Correlation-ID` header (generated if not provided by th
 ### Decimal Precision
 
 A `DecimalUtil` class handles all monetary arithmetic using integer-scaled math to avoid floating-point drift (the classic `0.1 + 0.2 !== 0.3` problem). Balances use 4 decimal places; FX rates use 8 decimal places to accommodate pairs with very small values (e.g. NGN/USD ≈ 0.00065).
+
+---
+
+## Flowcharts
+
+Visual flowcharts for all key system flows are available in the [`flowchart/`](./flowchart) directory at the project root.
+
+| #   | Flow                           | File                                                                                                 |
+| --- | ------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| 1   | User registration              | [`flowchart/1_User Registration.svg`](./flowchart/1_User%20Registration.svg)                         |
+| 2   | Account verification (OTP)     | [`flowchart/2_Account_Verfication_flow.svg`](./flowchart/2_Account_Verfication_flow.svg)             |
+| 3   | Wallet funding                 | [`flowchart/3_Wallet_Funding_flow.svg`](./flowchart/3_Wallet_Funding_flow.svg)                       |
+| 4   | Currency conversion & trade    | [`flowchart/4_Currency_Conversion_Trade_flow.svg`](./flowchart/4_Currency_Conversion_Trade_flow.svg) |
+| 5   | FX rate fetch & fallback chain | [`flowchart/5_FX_Rate_Fetch_Fallback_flow.svg`](./flowchart/5_FX_Rate_Fetch_Fallback_flow.svg)       |
 
 ---
 
