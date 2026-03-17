@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
@@ -12,11 +12,13 @@ import {
 } from './config';
 import { DomainEventsModule } from './common/events';
 import { RedisCacheModule } from './common/services/redis-cache.module';
+import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { AuthModule } from './modules/auth/auth.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 import { FxModule } from './modules/fx/fx.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
@@ -58,6 +60,7 @@ import { AdminModule } from './modules/admin/admin.module';
     TransactionsModule,
     FxModule,
     AdminModule,
+    HealthModule,
   ],
   providers: [
     {
@@ -66,4 +69,8 @@ import { AdminModule } from './modules/admin/admin.module';
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(CorrelationIdMiddleware).forRoutes('*');
+  }
+}

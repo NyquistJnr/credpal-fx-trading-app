@@ -4,6 +4,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -23,7 +24,10 @@ async function bootstrap() {
   );
 
   app.useGlobalFilters(new GlobalExceptionFilter());
-  app.useGlobalInterceptors(new TransformInterceptor());
+  app.useGlobalInterceptors(
+    new RequestLoggingInterceptor(),
+    new TransformInterceptor(),
+  );
   app.enableCors();
 
   const swaggerConfig = new DocumentBuilder()
@@ -36,6 +40,7 @@ async function bootstrap() {
     .addTag('FX', 'Foreign exchange rates')
     .addTag('Transactions', 'Transaction history')
     .addTag('Admin', 'Admin-only user and transaction management')
+    .addTag('Health', 'Service health and dependency checks')
     .build();
 
   const document = SwaggerModule.createDocument(app, swaggerConfig);
