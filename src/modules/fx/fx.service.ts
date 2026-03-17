@@ -1,6 +1,4 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { RedisCacheService } from '../../common/services/redis-cache.service';
 import {
@@ -8,9 +6,12 @@ import {
   FxRateProvider,
   FxRateMap,
 } from './interfaces/fx-rate-provider.interface';
-import { FxRateLog } from './entities/fx-rate-log.entity';
+import { FxRateLogRepository } from './repositories/fx-rate-log.repository';
 import { SUPPORTED_CURRENCIES, Currency } from '../../common/enums';
-import { FxRateUnavailableException } from '../../common/filters/business-exception';
+import {
+  FxRateUnavailableException,
+  StaleRateException,
+} from '../../common/filters/business-exception';
 
 interface CachedRateData {
   rates: FxRateMap;
@@ -18,41 +19,134 @@ interface CachedRateData {
   fetchedAt: string;
 }
 
+export interface RateResult {
+  rates: FxRateMap;
+  baseCurrency: string;
+  provider: string;
+  cached: boolean;
+  fetchedAt: string;
+  ageSeconds: number;
+}
+
+export interface PairRateResult {
+  rate: number;
+  provider: string;
+  fetchedAt: string;
+  ageSeconds: number;
+}
+
 @Injectable()
 export class FxService {
   private readonly logger = new Logger(FxService.name);
   private readonly cacheTtl: number;
+  private readonly maxRateAge: number;
 
   constructor(
     @Inject(FX_RATE_PROVIDER)
     private readonly fxRateProvider: FxRateProvider,
     private readonly redisCache: RedisCacheService,
     private readonly configService: ConfigService,
-    @InjectRepository(FxRateLog)
-    private readonly fxRateLogRepository: Repository<FxRateLog>,
+    private readonly fxRateLogRepository: FxRateLogRepository,
   ) {
     this.cacheTtl = this.configService.get<number>('fx.cacheTtl') ?? 300;
+    this.maxRateAge = this.configService.get<number>('fx.maxRateAge') ?? 60;
   }
 
-  async getRates(baseCurrency: Currency): Promise<{
-    rates: FxRateMap;
-    baseCurrency: string;
-    provider: string;
-    cached: boolean;
-    fetchedAt: string;
-  }> {
+  async getRates(baseCurrency: Currency): Promise<RateResult> {
+    return this.fetchRates(baseCurrency, false);
+  }
+
+  async getRate(
+    fromCurrency: Currency,
+    toCurrency: Currency,
+  ): Promise<PairRateResult> {
+    const rateData = await this.fetchRates(fromCurrency, true);
+    const rate = rateData.rates[toCurrency];
+
+    if (!rate) {
+      throw new FxRateUnavailableException();
+    }
+
+    return {
+      rate,
+      provider: rateData.provider,
+      fetchedAt: rateData.fetchedAt,
+      ageSeconds: rateData.ageSeconds,
+    };
+  }
+
+  async getAllSupportedRates(): Promise<
+    {
+      baseCurrency: string;
+      rates: Record<string, number>;
+      provider: string;
+      fetchedAt: string;
+    }[]
+  > {
+    const results = await Promise.allSettled(
+      SUPPORTED_CURRENCIES.map(async (currency) => {
+        const rateData = await this.getRates(currency);
+        return {
+          baseCurrency: currency,
+          rates: rateData.rates,
+          provider: rateData.provider,
+          fetchedAt: rateData.fetchedAt,
+        };
+      }),
+    );
+
+    const successful: {
+      baseCurrency: string;
+      rates: Record<string, number>;
+      provider: string;
+      fetchedAt: string;
+    }[] = [];
+
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        successful.push(result.value);
+      } else {
+        this.logger.warn(
+          `Failed to fetch rates for a currency: ${result.reason}`,
+        );
+      }
+    }
+
+    return successful;
+  }
+
+  private async fetchRates(
+    baseCurrency: Currency,
+    enforceMaxAge: boolean,
+  ): Promise<RateResult> {
     const cacheKey = `fx:rates:${baseCurrency}`;
 
+    // 1. Try Redis cache
     const cached = await this.redisCache.getJSON<CachedRateData>(cacheKey);
+
     if (cached) {
-      this.logger.debug(`Cache hit for ${baseCurrency} rates`);
-      return {
-        rates: this.filterSupportedCurrencies(cached.rates),
-        baseCurrency,
-        provider: cached.provider,
-        cached: true,
-        fetchedAt: cached.fetchedAt,
-      };
+      const ageSeconds = this.computeAgeSeconds(cached.fetchedAt);
+      const isFresh = this.maxRateAge === 0 || ageSeconds <= this.maxRateAge;
+
+      // If age is acceptable (or we don't enforce), return cached
+      if (!enforceMaxAge || isFresh) {
+        this.logger.debug(
+          `Cache hit for ${baseCurrency} rates (age: ${ageSeconds}s, fresh: ${isFresh})`,
+        );
+        return {
+          rates: this.filterSupportedCurrencies(cached.rates),
+          baseCurrency,
+          provider: cached.provider,
+          cached: true,
+          fetchedAt: cached.fetchedAt,
+          ageSeconds,
+        };
+      }
+
+      // Cache exists but is too old for trading, fall through to fresh fetch
+      this.logger.debug(
+        `Cache stale for ${baseCurrency} (age: ${ageSeconds}s > max: ${this.maxRateAge}s), fetching fresh rates`,
+      );
     }
 
     // 2. Fetch from external provider
@@ -66,9 +160,11 @@ export class FxService {
       await this.redisCache.setJSON(cacheKey, cacheData, this.cacheTtl);
 
       // Log to DB for audit trail (non-blocking)
-      this.logRatesToDb(baseCurrency, rates, provider).catch((err) =>
-        this.logger.error('Failed to log rates to DB', (err as Error).stack),
-      );
+      this.fxRateLogRepository
+        .logRates(baseCurrency, rates, provider, SUPPORTED_CURRENCIES)
+        .catch((err) =>
+          this.logger.error('Failed to log rates to DB', (err as Error).stack),
+        );
 
       return {
         rates: this.filterSupportedCurrencies(rates),
@@ -76,74 +172,66 @@ export class FxService {
         provider,
         cached: false,
         fetchedAt,
+        ageSeconds: 0,
       };
     } catch (error) {
       this.logger.warn(
-        `Provider failed, falling back to DB: ${(error as Error).message}`,
+        `Provider failed for ${baseCurrency}: ${(error as Error).message}`,
       );
     }
 
-    // 3. Fallback to most recent DB rates
-    const fallbackRates = await this.getFallbackRatesFromDb(baseCurrency);
-    if (fallbackRates) {
+    // 3. Provider failed — if we had a stale cache and we're enforcing age, reject it
+    if (enforceMaxAge && cached) {
+      const ageSeconds = this.computeAgeSeconds(cached.fetchedAt);
+      throw new StaleRateException(ageSeconds, this.maxRateAge);
+    }
+
+    // 4. For display (non-enforcing), return stale cache if we have it
+    if (cached) {
+      const ageSeconds = this.computeAgeSeconds(cached.fetchedAt);
       return {
-        rates: fallbackRates.rates,
+        rates: this.filterSupportedCurrencies(cached.rates),
         baseCurrency,
-        provider: `${fallbackRates.provider} (stale fallback)`,
-        cached: false,
-        fetchedAt: fallbackRates.fetchedAt,
+        provider: `${cached.provider} (stale)`,
+        cached: true,
+        fetchedAt: cached.fetchedAt,
+        ageSeconds,
       };
     }
 
-    // 4. Nothing available
+    // 5. Fallback to most recent DB rates
+    const fallbackRates = await this.getFallbackRatesFromDb(baseCurrency);
+
+    if (fallbackRates) {
+      const ageSeconds = this.computeAgeSeconds(fallbackRates.fetchedAt);
+
+      // DB fallback + enforceMaxAge = reject if too old
+      if (
+        enforceMaxAge &&
+        this.maxRateAge > 0 &&
+        ageSeconds > this.maxRateAge
+      ) {
+        throw new StaleRateException(ageSeconds, this.maxRateAge);
+      }
+
+      return {
+        rates: fallbackRates.rates,
+        baseCurrency,
+        provider: `${fallbackRates.provider} (db fallback)`,
+        cached: false,
+        fetchedAt: fallbackRates.fetchedAt,
+        ageSeconds,
+      };
+    }
+
+    // 6. Nothing available at all
     throw new FxRateUnavailableException();
   }
 
-  async getRate(
-    fromCurrency: Currency,
-    toCurrency: Currency,
-  ): Promise<{ rate: number; provider: string; fetchedAt: string }> {
-    const rateData = await this.getRates(fromCurrency);
-    const rate = rateData.rates[toCurrency];
-
-    if (!rate) {
-      throw new FxRateUnavailableException();
-    }
-
-    return {
-      rate,
-      provider: rateData.provider,
-      fetchedAt: rateData.fetchedAt,
-    };
-  }
-
-  async getAllSupportedRates(): Promise<
-    {
-      baseCurrency: string;
-      rates: Record<string, number>;
-      provider: string;
-      fetchedAt: string;
-    }[]
-  > {
-    const results = [];
-
-    for (const currency of SUPPORTED_CURRENCIES) {
-      try {
-        const rateData = await this.getRates(currency);
-        results.push({
-          baseCurrency: currency,
-          rates: rateData.rates,
-          provider: rateData.provider,
-          fetchedAt: rateData.fetchedAt,
-        });
-      } catch (error) {
-        this.logger.warn(
-          `Could not fetch rates for ${currency}: ${(error as Error).message}`,
-        );
-      }
-    }
-
-    return results;
+  private computeAgeSeconds(fetchedAt: string): number {
+    const fetchedTime = new Date(fetchedAt).getTime();
+    const now = Date.now();
+    return Math.round((now - fetchedTime) / 1000);
   }
 
   private filterSupportedCurrencies(rates: FxRateMap): FxRateMap {
@@ -156,43 +244,13 @@ export class FxService {
     return filtered;
   }
 
-  private async logRatesToDb(
-    baseCurrency: string,
-    rates: FxRateMap,
-    provider: string,
-  ): Promise<void> {
-    const now = new Date();
-    const logs: Partial<FxRateLog>[] = [];
-
-    for (const currency of SUPPORTED_CURRENCIES) {
-      if (rates[currency] !== undefined && currency !== baseCurrency) {
-        logs.push({
-          baseCurrency,
-          targetCurrency: currency,
-          rate: rates[currency],
-          provider,
-          fetchedAt: now,
-        });
-      }
-    }
-
-    if (logs.length > 0) {
-      await this.fxRateLogRepository.save(logs);
-      this.logger.debug(
-        `Logged ${logs.length} rate entries for ${baseCurrency}`,
-      );
-    }
-  }
-
   private async getFallbackRatesFromDb(
     baseCurrency: string,
   ): Promise<{ rates: FxRateMap; provider: string; fetchedAt: string } | null> {
-    const latestLogs = await this.fxRateLogRepository
-      .createQueryBuilder('log')
-      .where('log.base_currency = :baseCurrency', { baseCurrency })
-      .orderBy('log.fetched_at', 'DESC')
-      .limit(SUPPORTED_CURRENCIES.length)
-      .getMany();
+    const latestLogs = await this.fxRateLogRepository.getLatestRates(
+      baseCurrency,
+      SUPPORTED_CURRENCIES.length,
+    );
 
     if (latestLogs.length === 0) {
       return null;
@@ -203,7 +261,6 @@ export class FxService {
       rates[log.targetCurrency] = Number(log.rate);
     }
 
-    // Include the base currency itself at rate 1
     rates[baseCurrency] = 1;
 
     return {

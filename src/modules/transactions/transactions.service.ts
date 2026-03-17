@@ -1,72 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Transaction } from './entities/transaction.entity';
+import { TransactionRepository } from './repositories/transaction.repository';
 import { TransactionQueryDto } from './dto';
 import { ResponseHelper } from '../../common/helpers/response.helper';
+import { TransactionNotFoundException } from '../../common/filters/business-exception';
 
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
 
-  constructor(
-    @InjectRepository(Transaction)
-    private readonly transactionRepository: Repository<Transaction>,
-  ) {}
+  constructor(private readonly transactionRepository: TransactionRepository) {}
 
   async getTransactions(userId: string, query: TransactionQueryDto) {
-    const {
-      page,
-      limit,
-      sortOrder,
-      type,
-      status,
-      fromCurrency,
-      toCurrency,
-      startDate,
-      endDate,
-    } = query;
+    const { page, limit } = query;
 
-    const qb = this.transactionRepository
-      .createQueryBuilder('tx')
-      .where('tx.user_id = :userId', { userId });
-
-    if (type) {
-      qb.andWhere('tx.type = :type', { type });
-    }
-
-    if (status) {
-      qb.andWhere('tx.status = :status', { status });
-    }
-
-    if (fromCurrency) {
-      qb.andWhere('tx.from_currency = :fromCurrency', { fromCurrency });
-    }
-
-    if (toCurrency) {
-      qb.andWhere('tx.to_currency = :toCurrency', { toCurrency });
-    }
-
-    if (startDate) {
-      qb.andWhere('tx.created_at >= :startDate', {
-        startDate: new Date(startDate),
-      });
-    }
-
-    if (endDate) {
-      const endOfDay = new Date(endDate);
-      endOfDay.setHours(23, 59, 59, 999);
-      qb.andWhere('tx.created_at <= :endDate', { endDate: endOfDay });
-    }
-
-    const totalItems = await qb.getCount();
-
-    const skip = (page - 1) * limit;
-    const transactions = await qb
-      .orderBy('tx.created_at', sortOrder)
-      .skip(skip)
-      .take(limit)
-      .getMany();
+    const [transactions, totalItems] =
+      await this.transactionRepository.findPaginated(userId, query);
 
     const totalPages = Math.ceil(totalItems / limit);
 
@@ -96,12 +44,13 @@ export class TransactionsService {
   }
 
   async getTransactionById(userId: string, transactionId: string) {
-    const transaction = await this.transactionRepository.findOne({
-      where: { id: transactionId, userId },
-    });
+    const transaction = await this.transactionRepository.findByIdAndUser(
+      transactionId,
+      userId,
+    );
 
     if (!transaction) {
-      return ResponseHelper.success(null, 'Transaction not found.');
+      throw new TransactionNotFoundException(transactionId);
     }
 
     return ResponseHelper.success(
@@ -124,35 +73,20 @@ export class TransactionsService {
   }
 
   async getTransactionSummary(userId: string) {
-    const summary = await this.transactionRepository
-      .createQueryBuilder('tx')
-      .select('tx.type', 'type')
-      .addSelect('COUNT(*)', 'count')
-      .addSelect('tx.status', 'status')
-      .where('tx.user_id = :userId', { userId })
-      .groupBy('tx.type')
-      .addGroupBy('tx.status')
-      .getRawMany();
-
-    const totalTransactions = await this.transactionRepository.count({
-      where: { userId },
-    });
+    const { rows, total } = await this.transactionRepository.getSummary(userId);
 
     const byType: Record<string, number> = {};
     const byStatus: Record<string, number> = {};
 
-    for (const row of summary) {
-      const typeKey = row.type as string;
-      const statusKey = row.status as string;
+    for (const row of rows) {
       const count = parseInt(row.count, 10);
-
-      byType[typeKey] = (byType[typeKey] ?? 0) + count;
-      byStatus[statusKey] = (byStatus[statusKey] ?? 0) + count;
+      byType[row.type] = (byType[row.type] ?? 0) + count;
+      byStatus[row.status] = (byStatus[row.status] ?? 0) + count;
     }
 
     return ResponseHelper.success(
       {
-        totalTransactions,
+        totalTransactions: total,
         byType,
         byStatus,
       },

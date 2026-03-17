@@ -46,6 +46,7 @@ export class FxController {
         provider: rateData.provider,
         cached: rateData.cached,
         fetchedAt: rateData.fetchedAt,
+        ageSeconds: rateData.ageSeconds,
       },
       'FX rates retrieved successfully.',
     );
@@ -88,6 +89,7 @@ export class FxController {
         rate: rateData.rate,
         provider: rateData.provider,
         fetchedAt: rateData.fetchedAt,
+        ageSeconds: rateData.ageSeconds,
       },
       `Rate for ${fromCurrency} → ${toCurrency} retrieved successfully.`,
     );

@@ -1,8 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, QueryRunner } from 'typeorm';
-import { WalletBalance } from './entities/wallet-balance.entity';
-import { Transaction } from '../transactions/entities/transaction.entity';
+import { DataSource } from 'typeorm';
+import { WalletBalanceRepository } from './repositories/wallet-balance.repository';
+import { TransactionRepository } from '../transactions/repositories/transaction.repository';
 import { FxService } from '../fx/fx.service';
 import { RedisCacheService } from '../../common/services/redis-cache.service';
 import {
@@ -18,6 +17,7 @@ import {
 } from '../../common/filters/business-exception';
 import { FundWalletDto, ConvertCurrencyDto, TradeCurrencyDto } from './dto';
 import { ResponseHelper } from '../../common/helpers/response.helper';
+import { DecimalUtil } from '../../common/utils/decimal.util';
 
 @Injectable()
 export class WalletService {
@@ -25,28 +25,18 @@ export class WalletService {
   private readonly IDEMPOTENCY_TTL = 3600;
 
   constructor(
-    @InjectRepository(WalletBalance)
-    private readonly walletRepository: Repository<WalletBalance>,
-    @InjectRepository(Transaction)
-    private readonly transactionRepository: Repository<Transaction>,
+    private readonly walletBalanceRepository: WalletBalanceRepository,
+    private readonly transactionRepository: TransactionRepository,
     private readonly dataSource: DataSource,
     private readonly fxService: FxService,
     private readonly redisCache: RedisCacheService,
   ) {}
 
   async getBalances(userId: string) {
-    const balances = await this.walletRepository.find({
-      where: { userId },
-      order: { currency: 'ASC' },
-    });
-
-    const balanceMap: Record<string, number> = {};
-    for (const balance of balances) {
-      balanceMap[balance.currency] = Number(balance.balance);
-    }
+    const balances = await this.walletBalanceRepository.getBalanceMap(userId);
 
     return ResponseHelper.success(
-      { userId, balances: balanceMap },
+      { userId, balances },
       'Wallet balances retrieved successfully.',
     );
   }
@@ -61,28 +51,32 @@ export class WalletService {
     await queryRunner.startTransaction();
 
     try {
-      const wallet = await this.getOrCreateWalletBalance(
+      const wallet = await this.walletBalanceRepository.findOrCreateWithLock(
         queryRunner,
         userId,
         dto.currency,
       );
 
-      wallet.balance = Number(wallet.balance) + dto.amount;
-      await queryRunner.manager.save(wallet);
+      // Credit — no negative-balance risk on funding
+      await this.walletBalanceRepository.creditWithSave(
+        queryRunner,
+        wallet,
+        dto.amount,
+      );
 
-      const transaction = queryRunner.manager.create(Transaction, {
-        userId,
-        type: TransactionType.FUNDING,
-        status: TransactionStatus.COMPLETED,
-        fromCurrency: null,
-        toCurrency: dto.currency,
-        fromAmount: null,
-        toAmount: dto.amount,
-        rateUsed: null,
-        idempotencyKey: dto.idempotencyKey ?? null,
-        description: `Funded wallet with ${dto.amount} ${dto.currency}`,
-      });
-      await queryRunner.manager.save(transaction);
+      const transaction =
+        await this.transactionRepository.createWithQueryRunner(queryRunner, {
+          userId,
+          type: TransactionType.FUNDING,
+          status: TransactionStatus.COMPLETED,
+          fromCurrency: null,
+          toCurrency: dto.currency,
+          fromAmount: null,
+          toAmount: dto.amount,
+          rateUsed: null,
+          idempotencyKey: dto.idempotencyKey ?? null,
+          description: `Funded wallet with ${dto.amount} ${dto.currency}`,
+        });
 
       await queryRunner.commitTransaction();
 
@@ -97,7 +91,7 @@ export class WalletService {
           transactionId: transaction.id,
           currency: dto.currency,
           amountFunded: dto.amount,
-          newBalance: Number(wallet.balance),
+          newBalance: DecimalUtil.toNumber(wallet.balance),
         },
         'Wallet funded successfully.',
       );
@@ -118,60 +112,66 @@ export class WalletService {
       await this.checkIdempotency(dto.idempotencyKey);
     }
 
-    // Fetch rate BEFORE starting the transaction to avoid holding locks during external calls
     const rateData = await this.fxService.getRate(
       dto.fromCurrency,
       dto.toCurrency,
     );
-    const convertedAmount = this.calculateConversion(dto.amount, rateData.rate);
+    const convertedAmount = DecimalUtil.multiply(dto.amount, rateData.rate);
 
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction('SERIALIZABLE');
 
     try {
-      // Lock and debit source wallet
-      const sourceWallet = await this.getWalletWithLock(
+      // Lock source wallet
+      const sourceWallet = await this.walletBalanceRepository.findWithLock(
         queryRunner,
         userId,
         dto.fromCurrency,
       );
 
-      if (Number(sourceWallet.balance) < dto.amount) {
+      if (!sourceWallet || DecimalUtil.lt(sourceWallet.balance, dto.amount)) {
         throw new InsufficientBalanceException(dto.fromCurrency);
       }
 
-      sourceWallet.balance = Number(sourceWallet.balance) - dto.amount;
-      await queryRunner.manager.save(sourceWallet);
-
-      // Credit target wallet (create if not exists)
-      const targetWallet = await this.getOrCreateWalletBalance(
+      // Debit with negative-balance guard (defence-in-depth)
+      await this.walletBalanceRepository.debitWithGuard(
         queryRunner,
-        userId,
-        dto.toCurrency,
+        sourceWallet,
+        dto.amount,
       );
 
-      targetWallet.balance = Number(targetWallet.balance) + convertedAmount;
-      await queryRunner.manager.save(targetWallet);
+      // Credit target wallet (create if not exists)
+      const targetWallet =
+        await this.walletBalanceRepository.findOrCreateWithLock(
+          queryRunner,
+          userId,
+          dto.toCurrency,
+        );
+
+      await this.walletBalanceRepository.creditWithSave(
+        queryRunner,
+        targetWallet,
+        convertedAmount,
+      );
 
       // Record transaction
-      const transaction = queryRunner.manager.create(Transaction, {
-        userId,
-        type: TransactionType.CONVERSION,
-        status: TransactionStatus.COMPLETED,
-        fromCurrency: dto.fromCurrency,
-        toCurrency: dto.toCurrency,
-        fromAmount: dto.amount,
-        toAmount: convertedAmount,
-        rateUsed: rateData.rate,
-        idempotencyKey: dto.idempotencyKey ?? null,
-        description: `Converted ${dto.amount} ${dto.fromCurrency} to ${convertedAmount} ${dto.toCurrency} at rate ${rateData.rate}`,
-      });
-      await queryRunner.manager.save(transaction);
+      const transaction =
+        await this.transactionRepository.createWithQueryRunner(queryRunner, {
+          userId,
+          type: TransactionType.CONVERSION,
+          status: TransactionStatus.COMPLETED,
+          fromCurrency: dto.fromCurrency,
+          toCurrency: dto.toCurrency,
+          fromAmount: dto.amount,
+          toAmount: convertedAmount,
+          rateUsed: rateData.rate,
+          idempotencyKey: dto.idempotencyKey ?? null,
+          description: `Converted ${dto.amount} ${dto.fromCurrency} to ${convertedAmount} ${dto.toCurrency} at rate ${rateData.rate}`,
+        });
 
       await queryRunner.commitTransaction();
 
-      // Mark idempotency key as used
       if (dto.idempotencyKey) {
         await this.markIdempotencyUsed(dto.idempotencyKey);
       }
@@ -188,8 +188,8 @@ export class WalletService {
           fromAmount: dto.amount,
           toAmount: convertedAmount,
           rateUsed: rateData.rate,
-          sourceBalance: Number(sourceWallet.balance),
-          targetBalance: Number(targetWallet.balance),
+          sourceBalance: DecimalUtil.toNumber(sourceWallet.balance),
+          targetBalance: DecimalUtil.toNumber(targetWallet.balance),
         },
         'Currency conversion successful.',
       );
@@ -206,7 +206,6 @@ export class WalletService {
    * Same logic as convert but enforced to involve NGN on one side.
    */
   async tradeCurrency(userId: string, dto: TradeCurrencyDto) {
-    // Validate that NGN is on at least one side of the trade
     if (dto.fromCurrency !== Currency.NGN && dto.toCurrency !== Currency.NGN) {
       throw new BusinessException(
         'Trades must involve NGN on at least one side. Use convert for cross-currency exchanges.',
@@ -218,7 +217,6 @@ export class WalletService {
       throw new SameCurrencyException();
     }
 
-    // Idempotency check
     if (dto.idempotencyKey) {
       await this.checkIdempotency(dto.idempotencyKey);
     }
@@ -227,55 +225,59 @@ export class WalletService {
       dto.fromCurrency,
       dto.toCurrency,
     );
-    const receivedAmount = this.calculateConversion(dto.amount, rateData.rate);
+    const receivedAmount = DecimalUtil.multiply(dto.amount, rateData.rate);
 
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction('SERIALIZABLE');
 
     try {
-      // Lock and debit source wallet
-      const sourceWallet = await this.getWalletWithLock(
+      const sourceWallet = await this.walletBalanceRepository.findWithLock(
         queryRunner,
         userId,
         dto.fromCurrency,
       );
 
-      if (Number(sourceWallet.balance) < dto.amount) {
+      if (!sourceWallet || DecimalUtil.lt(sourceWallet.balance, dto.amount)) {
         throw new InsufficientBalanceException(dto.fromCurrency);
       }
 
-      sourceWallet.balance = Number(sourceWallet.balance) - dto.amount;
-      await queryRunner.manager.save(sourceWallet);
-
-      // Credit target wallet
-      const targetWallet = await this.getOrCreateWalletBalance(
+      // Debit with negative-balance guard
+      await this.walletBalanceRepository.debitWithGuard(
         queryRunner,
-        userId,
-        dto.toCurrency,
+        sourceWallet,
+        dto.amount,
       );
 
-      targetWallet.balance = Number(targetWallet.balance) + receivedAmount;
-      await queryRunner.manager.save(targetWallet);
+      const targetWallet =
+        await this.walletBalanceRepository.findOrCreateWithLock(
+          queryRunner,
+          userId,
+          dto.toCurrency,
+        );
 
-      // Record transaction
-      const transaction = queryRunner.manager.create(Transaction, {
-        userId,
-        type: TransactionType.TRADE,
-        status: TransactionStatus.COMPLETED,
-        fromCurrency: dto.fromCurrency,
-        toCurrency: dto.toCurrency,
-        fromAmount: dto.amount,
-        toAmount: receivedAmount,
-        rateUsed: rateData.rate,
-        idempotencyKey: dto.idempotencyKey ?? null,
-        description: `Traded ${dto.amount} ${dto.fromCurrency} for ${receivedAmount} ${dto.toCurrency} at rate ${rateData.rate}`,
-      });
-      await queryRunner.manager.save(transaction);
+      await this.walletBalanceRepository.creditWithSave(
+        queryRunner,
+        targetWallet,
+        receivedAmount,
+      );
+
+      const transaction =
+        await this.transactionRepository.createWithQueryRunner(queryRunner, {
+          userId,
+          type: TransactionType.TRADE,
+          status: TransactionStatus.COMPLETED,
+          fromCurrency: dto.fromCurrency,
+          toCurrency: dto.toCurrency,
+          fromAmount: dto.amount,
+          toAmount: receivedAmount,
+          rateUsed: rateData.rate,
+          idempotencyKey: dto.idempotencyKey ?? null,
+          description: `Traded ${dto.amount} ${dto.fromCurrency} for ${receivedAmount} ${dto.toCurrency} at rate ${rateData.rate}`,
+        });
 
       await queryRunner.commitTransaction();
 
-      // Mark idempotency key as used
       if (dto.idempotencyKey) {
         await this.markIdempotencyUsed(dto.idempotencyKey);
       }
@@ -292,8 +294,8 @@ export class WalletService {
           fromAmount: dto.amount,
           toAmount: receivedAmount,
           rateUsed: rateData.rate,
-          sourceBalance: Number(sourceWallet.balance),
-          targetBalance: Number(targetWallet.balance),
+          sourceBalance: DecimalUtil.toNumber(sourceWallet.balance),
+          targetBalance: DecimalUtil.toNumber(targetWallet.balance),
         },
         'Trade executed successfully.',
       );
@@ -305,54 +307,6 @@ export class WalletService {
     }
   }
 
-  private async getWalletWithLock(
-    queryRunner: QueryRunner,
-    userId: string,
-    currency: Currency,
-  ): Promise<WalletBalance> {
-    const wallet = await queryRunner.manager
-      .createQueryBuilder(WalletBalance, 'wb')
-      .setLock('pessimistic_write')
-      .where('wb.user_id = :userId', { userId })
-      .andWhere('wb.currency = :currency', { currency })
-      .getOne();
-
-    if (!wallet) {
-      throw new InsufficientBalanceException(currency);
-    }
-
-    return wallet;
-  }
-
-  private async getOrCreateWalletBalance(
-    queryRunner: QueryRunner,
-    userId: string,
-    currency: Currency,
-  ): Promise<WalletBalance> {
-    let wallet = await queryRunner.manager
-      .createQueryBuilder(WalletBalance, 'wb')
-      .setLock('pessimistic_write')
-      .where('wb.user_id = :userId', { userId })
-      .andWhere('wb.currency = :currency', { currency })
-      .getOne();
-
-    if (!wallet) {
-      wallet = queryRunner.manager.create(WalletBalance, {
-        userId,
-        currency,
-        balance: 0,
-      });
-      wallet = await queryRunner.manager.save(wallet);
-    }
-
-    return wallet;
-  }
-
-  private calculateConversion(amount: number, rate: number): number {
-    const result = amount * rate;
-    return Math.round(result * 10000) / 10000;
-  }
-
   private async checkIdempotency(key: string): Promise<void> {
     const redisKey = `idempotency:${key}`;
     const exists = await this.redisCache.exists(redisKey);
@@ -360,10 +314,7 @@ export class WalletService {
       throw new DuplicateTransactionException();
     }
 
-    // Check DB as well (in case Redis was cleared)
-    const existing = await this.transactionRepository.findOne({
-      where: { idempotencyKey: key },
-    });
+    const existing = await this.transactionRepository.findByIdempotencyKey(key);
     if (existing) {
       throw new DuplicateTransactionException();
     }

@@ -10,10 +10,18 @@ export class BusinessException extends HttpException {
   }
 }
 
-// Wallet-specific
 export class InsufficientBalanceException extends BusinessException {
   constructor(currency: string) {
     super(`Insufficient ${currency} balance`, 'WALLET_INSUFFICIENT_BALANCE');
+  }
+}
+
+export class NegativeBalanceException extends BusinessException {
+  constructor(currency: string) {
+    super(
+      `Balance for ${currency} would become negative. Operation aborted.`,
+      'WALLET_NEGATIVE_BALANCE',
+    );
   }
 }
 
@@ -32,7 +40,6 @@ export class SameCurrencyException extends BusinessException {
   }
 }
 
-// FX-specific
 export class FxRateUnavailableException extends BusinessException {
   constructor() {
     super(
@@ -43,7 +50,16 @@ export class FxRateUnavailableException extends BusinessException {
   }
 }
 
-// Auth-specific
+export class StaleRateException extends BusinessException {
+  constructor(ageSeconds: number, maxAgeSeconds: number) {
+    super(
+      `FX rate is too stale (${ageSeconds}s old, max allowed ${maxAgeSeconds}s). Please retry to fetch a fresh rate.`,
+      'FX_RATE_STALE',
+      HttpStatus.SERVICE_UNAVAILABLE,
+    );
+  }
+}
+
 export class OtpExpiredException extends BusinessException {
   constructor() {
     super('OTP has expired. Please request a new one.', 'AUTH_OTP_EXPIRED');
@@ -76,13 +92,22 @@ export class UserNotVerifiedException extends BusinessException {
   }
 }
 
-// Idempotency
 export class DuplicateTransactionException extends BusinessException {
   constructor() {
     super(
       'Transaction with this idempotency key already exists.',
       'DUPLICATE_TRANSACTION',
       HttpStatus.CONFLICT,
+    );
+  }
+}
+
+export class TransactionNotFoundException extends BusinessException {
+  constructor(transactionId: string) {
+    super(
+      `Transaction ${transactionId} not found.`,
+      'TRANSACTION_NOT_FOUND',
+      HttpStatus.NOT_FOUND,
     );
   }
 }

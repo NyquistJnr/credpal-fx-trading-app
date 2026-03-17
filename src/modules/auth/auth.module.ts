@@ -8,10 +8,12 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { User } from './entities/user.entity';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
+import { UserRepository } from './repositories/user.repository';
+import { WalletBalanceRepository } from '../wallet/repositories/wallet-balance.repository';
 import { JwtStrategy } from './strategies/jwt.strategy';
+import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { SmtpMailProvider } from '../../common/services/smtp-mail.provider';
 import { MAIL_PROVIDER } from '../../common/interfaces/mail-provider.interface';
-import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 
 @Module({
   imports: [
@@ -58,6 +60,8 @@ import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
   controllers: [AuthController],
   providers: [
     AuthService,
+    UserRepository,
+    WalletBalanceRepository,
     JwtStrategy,
     JwtRefreshStrategy,
     {
@@ -65,6 +69,6 @@ import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
       useClass: SmtpMailProvider,
     },
   ],
-  exports: [JwtStrategy, PassportModule],
+  exports: [JwtStrategy, PassportModule, UserRepository],
 })
 export class AuthModule {}

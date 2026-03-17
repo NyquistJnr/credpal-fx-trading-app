@@ -1,10 +1,11 @@
-import { Column, Entity, ManyToOne, JoinColumn, Unique } from 'typeorm';
+import { Column, Entity, ManyToOne, JoinColumn, Unique, Check } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { User } from '../../auth/entities/user.entity';
 import { Currency } from '../../../common/enums';
 
 @Entity('wallet_balances')
 @Unique('UQ_user_currency', ['userId', 'currency'])
+@Check('CHK_balance_non_negative', '"balance" >= 0')
 export class WalletBalance extends BaseEntity {
   @Column({ name: 'user_id' })
   userId: string;

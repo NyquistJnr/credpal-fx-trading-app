@@ -4,12 +4,14 @@ import { WalletBalance } from './entities/wallet-balance.entity';
 import { Transaction } from '../transactions/entities/transaction.entity';
 import { WalletController } from './wallet.controller';
 import { WalletService } from './wallet.service';
+import { WalletBalanceRepository } from './repositories/wallet-balance.repository';
+import { TransactionRepository } from '../transactions/repositories/transaction.repository';
 import { FxModule } from '../fx/fx.module';
 
 @Module({
   imports: [TypeOrmModule.forFeature([WalletBalance, Transaction]), FxModule],
   controllers: [WalletController],
-  providers: [WalletService],
-  exports: [WalletService],
+  providers: [WalletService, WalletBalanceRepository, TransactionRepository],
+  exports: [WalletService, WalletBalanceRepository],
 })
 export class WalletModule {}

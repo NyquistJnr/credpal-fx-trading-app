@@ -1,6 +1,4 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { Inject } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
@@ -13,8 +11,13 @@ import {
   ForgotPasswordDto,
   ResetPasswordDto,
 } from './dto';
+import { UserRepository } from './repositories/user.repository';
+import { WalletBalanceRepository } from '../wallet/repositories/wallet-balance.repository';
 import { RedisCacheService } from '../../common/services/redis-cache.service';
-import { MAIL_PROVIDER } from '../../common/interfaces/mail-provider.interface';
+import {
+  MAIL_PROVIDER,
+  MailProvider,
+} from '../../common/interfaces/mail-provider.interface';
 import {
   EmailAlreadyExistsException,
   InvalidOtpException,
@@ -23,7 +26,6 @@ import {
 } from '../../common/filters/business-exception';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { ResponseHelper } from '../../common/helpers/response.helper';
-import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
 import { SUPPORTED_CURRENCIES } from '../../common/enums';
 import { ConfigService } from '@nestjs/config';
 
@@ -37,24 +39,17 @@ export class AuthService {
   private readonly SALT_ROUNDS = 10;
 
   constructor(
-    @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
-    @InjectRepository(WalletBalance)
-    private readonly walletRepository: Repository<WalletBalance>,
+    private readonly userRepository: UserRepository,
+    private readonly walletBalanceRepository: WalletBalanceRepository,
     private readonly jwtService: JwtService,
     private readonly redisCache: RedisCacheService,
     @Inject(MAIL_PROVIDER)
-    private readonly mailProvider: {
-      sendMail: (options: any) => Promise<void>;
-      getProviderName: () => string;
-    },
+    private readonly mailProvider: MailProvider,
     private readonly configService: ConfigService,
   ) {}
 
   async register(dto: RegisterDto) {
-    const existingUser = await this.userRepository.findOne({
-      where: { email: dto.email.toLowerCase() },
-    });
+    const existingUser = await this.userRepository.findByEmail(dto.email);
 
     if (existingUser) {
       throw new EmailAlreadyExistsException();
@@ -62,7 +57,7 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, this.SALT_ROUNDS);
 
-    const user = this.userRepository.create({
+    const user = await this.userRepository.create({
       email: dto.email.toLowerCase(),
       passwordHash,
       firstName: dto.firstName,
@@ -70,8 +65,10 @@ export class AuthService {
       isVerified: false,
     });
 
-    await this.userRepository.save(user);
-    await this.seedWalletBalances(user.id);
+    await this.walletBalanceRepository.seedForUser(
+      user.id,
+      SUPPORTED_CURRENCIES,
+    );
     await this.generateAndSendOtp(user);
 
     return ResponseHelper.success(
@@ -84,9 +81,7 @@ export class AuthService {
   }
 
   async verifyOtp(dto: VerifyOtpDto) {
-    const user = await this.userRepository.findOne({
-      where: { email: dto.email.toLowerCase() },
-    });
+    const user = await this.userRepository.findByEmail(dto.email);
 
     if (!user) {
       throw new InvalidOtpException();
@@ -123,13 +118,15 @@ export class AuthService {
       throw new InvalidOtpException();
     }
 
-    user.isVerified = true;
-    await this.userRepository.save(user);
+    await this.userRepository.markAsVerified(user.id);
     await this.redisCache.del(otpKey);
     await this.redisCache.del(attemptsKey);
 
+    // Reload user to get updated isVerified flag for token payload
+    user.isVerified = true;
+
     const { accessToken, refreshToken } = await this.generateTokens(user);
-    const balances = await this.getUserBalances(user.id);
+    const balances = await this.walletBalanceRepository.getBalanceMap(user.id);
 
     return ResponseHelper.success(
       {
@@ -149,9 +146,7 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const user = await this.userRepository.findOne({
-      where: { email: dto.email.toLowerCase() },
-    });
+    const user = await this.userRepository.findByEmail(dto.email);
 
     if (!user) {
       throw new BusinessException(
@@ -187,7 +182,7 @@ export class AuthService {
     }
 
     const { accessToken, refreshToken } = await this.generateTokens(user);
-    const balances = await this.getUserBalances(user.id);
+    const balances = await this.walletBalanceRepository.getBalanceMap(user.id);
 
     return ResponseHelper.success(
       {
@@ -207,9 +202,7 @@ export class AuthService {
   }
 
   async resendOtp(dto: ResendOtpDto) {
-    const user = await this.userRepository.findOne({
-      where: { email: dto.email.toLowerCase() },
-    });
+    const user = await this.userRepository.findByEmail(dto.email);
 
     if (!user) {
       return ResponseHelper.success(
@@ -224,8 +217,8 @@ export class AuthService {
         'Email is already verified.',
       );
     }
-    await this.redisCache.del(`otp:attempts:${user.id}`);
 
+    await this.redisCache.del(`otp:attempts:${user.id}`);
     await this.generateAndSendOtp(user);
 
     return ResponseHelper.success(
@@ -234,37 +227,8 @@ export class AuthService {
     );
   }
 
-  private async generateAndSendOtp(user: User): Promise<void> {
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpKey = `otp:${user.id}`;
-
-    await this.redisCache.set(otpKey, otp, this.OTP_TTL);
-
-    try {
-      await this.mailProvider.sendMail({
-        to: user.email,
-        subject: 'FX Trading - Email Verification OTP',
-        html: `
-          <h2>Email Verification</h2>
-          <p>Hello ${user.firstName},</p>
-          <p>Your OTP verification code is:</p>
-          <h1 style="letter-spacing: 8px; font-size: 32px; color: #333;">${otp}</h1>
-          <p>This code expires in 10 minutes.</p>
-          <p>If you did not request this, please ignore this email.</p>
-        `,
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to send OTP email to ${user.email}`,
-        (error as Error).stack,
-      );
-    }
-  }
-
   async refreshToken(userId: string, refreshToken: string) {
-    const user = await this.userRepository.findOne({
-      where: { id: userId },
-    });
+    const user = await this.userRepository.findById(userId);
 
     if (!user || !user.refreshTokenHash) {
       throw new UnauthorizedException('Access denied');
@@ -285,9 +249,7 @@ export class AuthService {
   }
 
   async forgotPassword(dto: ForgotPasswordDto) {
-    const user = await this.userRepository.findOne({
-      where: { email: dto.email.toLowerCase() },
-    });
+    const user = await this.userRepository.findByEmail(dto.email);
 
     if (!user) {
       return ResponseHelper.success(
@@ -327,9 +289,7 @@ export class AuthService {
   }
 
   async resetPassword(dto: ResetPasswordDto) {
-    const user = await this.userRepository.findOne({
-      where: { email: dto.email.toLowerCase() },
-    });
+    const user = await this.userRepository.findByEmail(dto.email);
 
     if (!user) {
       throw new InvalidOtpException();
@@ -347,16 +307,42 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.newPassword, this.SALT_ROUNDS);
-    user.passwordHash = passwordHash;
-    user.refreshTokenHash = null;
-
-    await this.userRepository.save(user);
+    await this.userRepository.updatePassword(user.id, passwordHash);
     await this.redisCache.del(otpKey);
 
     return ResponseHelper.success(
       null,
       'Password has been reset successfully. You can now log in.',
     );
+  }
+
+  // ── Private helpers ──────────────────────────────────────────────
+
+  private async generateAndSendOtp(user: User): Promise<void> {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpKey = `otp:${user.id}`;
+
+    await this.redisCache.set(otpKey, otp, this.OTP_TTL);
+
+    try {
+      await this.mailProvider.sendMail({
+        to: user.email,
+        subject: 'FX Trading - Email Verification OTP',
+        html: `
+          <h2>Email Verification</h2>
+          <p>Hello ${user.firstName},</p>
+          <p>Your OTP verification code is:</p>
+          <h1 style="letter-spacing: 8px; font-size: 32px; color: #333;">${otp}</h1>
+          <p>This code expires in 10 minutes.</p>
+          <p>If you did not request this, please ignore this email.</p>
+        `,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to send OTP email to ${user.email}`,
+        (error as Error).stack,
+      );
+    }
   }
 
   private async generateTokens(
@@ -370,7 +356,6 @@ export class AuthService {
 
     const accessTokenSecret = this.configService.get<string>('jwt.secret');
     const accessTokenExp = this.configService.get<number>('jwt.expiration');
-
     const refreshTokenSecret =
       this.configService.get<string>('jwt.refreshSecret');
     const refreshTokenExp = this.configService.get<number>(
@@ -389,34 +374,8 @@ export class AuthService {
     ]);
 
     const refreshTokenHash = await bcrypt.hash(refreshToken, this.SALT_ROUNDS);
-    await this.userRepository.update(user.id, { refreshTokenHash });
+    await this.userRepository.updateRefreshTokenHash(user.id, refreshTokenHash);
 
     return { accessToken, refreshToken };
-  }
-
-  private async seedWalletBalances(userId: string): Promise<void> {
-    const wallets = SUPPORTED_CURRENCIES.map((currency) =>
-      this.walletRepository.create({
-        userId,
-        currency,
-        balance: 0,
-      }),
-    );
-    await this.walletRepository.save(wallets);
-  }
-
-  private async getUserBalances(
-    userId: string,
-  ): Promise<Record<string, number>> {
-    const balances = await this.walletRepository.find({
-      where: { userId },
-      order: { currency: 'ASC' },
-    });
-
-    const balanceMap: Record<string, number> = {};
-    for (const balance of balances) {
-      balanceMap[balance.currency] = Number(balance.balance);
-    }
-    return balanceMap;
   }
 }
