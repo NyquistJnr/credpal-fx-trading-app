@@ -8,6 +8,7 @@ import { TransactionQueryDto } from '../transactions/dto';
 import { Role } from '../../common/enums';
 import { BusinessException } from '../../common/filters/business-exception';
 import { HttpStatus } from '@nestjs/common';
+import { AdminUsersQueryDto } from './dto';
 
 @Injectable()
 export class AdminService {
@@ -19,7 +20,7 @@ export class AdminService {
     private readonly transactionRepository: TransactionRepository,
   ) {}
 
-  async getUsers(pagination: PaginationQueryDto, email?: string, role?: Role) {
+  async getUsers(pagination: AdminUsersQueryDto, email?: string, role?: Role) {
     const { page, limit, sortOrder } = pagination;
 
     const qb = this.userRepository
@@ -46,7 +47,7 @@ export class AdminService {
 
     const skip = (page - 1) * limit;
     const users = await qb
-      .orderBy('user.created_at', sortOrder)
+      .orderBy('user.createdAt', sortOrder)
       .skip(skip)
       .take(limit)
       .getMany();
@@ -186,7 +187,7 @@ export class AdminService {
 
     const skip = (page - 1) * limit;
     const transactions = await qb
-      .orderBy('tx.created_at', sortOrder)
+      .orderBy('tx.createdAt', sortOrder)
       .skip(skip)
       .take(limit)
       .getMany();

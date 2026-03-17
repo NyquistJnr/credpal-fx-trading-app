@@ -24,6 +24,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { TransactionQueryDto } from '../transactions/dto';
+import { AdminUsersQueryDto } from './dto';
 
 @ApiTags('Admin')
 @ApiBearerAuth()
@@ -44,12 +45,8 @@ export class AdminController {
     enum: Role,
     description: 'Filter by role',
   })
-  async getUsers(
-    @Query() pagination: PaginationQueryDto,
-    @Query('email') email?: string,
-    @Query('role') role?: Role,
-  ) {
-    return this.adminService.getUsers(pagination, email, role);
+  async getUsers(@Query() query: AdminUsersQueryDto) {
+    return this.adminService.getUsers(query, query.email, query.role);
   }
 
   @Get('users/:id')
