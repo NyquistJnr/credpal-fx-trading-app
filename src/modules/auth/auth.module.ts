@@ -11,6 +11,7 @@ import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { SmtpMailProvider } from '../../common/services/smtp-mail.provider';
 import { MAIL_PROVIDER } from '../../common/interfaces/mail-provider.interface';
+import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { MAIL_PROVIDER } from '../../common/interfaces/mail-provider.interface';
   providers: [
     AuthService,
     JwtStrategy,
+    JwtRefreshStrategy,
     {
       provide: MAIL_PROVIDER,
       useClass: SmtpMailProvider,

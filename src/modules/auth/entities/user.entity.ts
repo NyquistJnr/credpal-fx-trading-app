@@ -25,4 +25,7 @@ export class User extends BaseEntity {
 
   @OneToMany(() => Transaction, (transaction) => transaction.user)
   transactions: Transaction[];
+
+  @Column({ name: 'refresh_token_hash', type: 'varchar', nullable: true })
+  refreshTokenHash: string | null;
 }

@@ -1,11 +1,19 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { Inject } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { User } from './entities/user.entity';
-import { RegisterDto, VerifyOtpDto, LoginDto, ResendOtpDto } from './dto';
+import {
+  RegisterDto,
+  VerifyOtpDto,
+  LoginDto,
+  ResendOtpDto,
+  RefreshTokenDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+} from './dto';
 import { RedisCacheService } from '../../common/services/redis-cache.service';
 import { MAIL_PROVIDER } from '../../common/interfaces/mail-provider.interface';
 import {
@@ -17,7 +25,8 @@ import {
 import { JwtPayload } from './strategies/jwt.strategy';
 import { ResponseHelper } from '../../common/helpers/response.helper';
 import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
-import { SUPPORTED_CURRENCIES, Currency } from '../../common/enums';
+import { SUPPORTED_CURRENCIES } from '../../common/enums';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class AuthService {
@@ -40,6 +49,7 @@ export class AuthService {
       sendMail: (options: any) => Promise<void>;
       getProviderName: () => string;
     },
+    private readonly configService: ConfigService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -119,12 +129,13 @@ export class AuthService {
     await this.redisCache.del(otpKey);
     await this.redisCache.del(attemptsKey);
 
-    const token = this.generateToken(user);
+    const { accessToken, refreshToken } = await this.generateTokens(user);
     const balances = await this.getUserBalances(user.id);
 
     return ResponseHelper.success(
       {
-        accessToken: token,
+        accessToken,
+        refreshToken,
         user: {
           id: user.id,
           email: user.email,
@@ -176,12 +187,13 @@ export class AuthService {
       );
     }
 
-    const token = this.generateToken(user);
+    const { accessToken, refreshToken } = await this.generateTokens(user);
     const balances = await this.getUserBalances(user.id);
 
     return ResponseHelper.success(
       {
-        accessToken: token,
+        accessToken,
+        refreshToken,
         user: {
           id: user.id,
           email: user.email,
@@ -250,14 +262,137 @@ export class AuthService {
     }
   }
 
-  private generateToken(user: User): string {
+  async refreshToken(userId: string, refreshToken: string) {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+    });
+
+    if (!user || !user.refreshTokenHash) {
+      throw new UnauthorizedException('Access denied');
+    }
+
+    const isRefreshTokenValid = await bcrypt.compare(
+      refreshToken,
+      user.refreshTokenHash,
+    );
+
+    if (!isRefreshTokenValid) {
+      throw new UnauthorizedException('Access denied');
+    }
+
+    const tokens = await this.generateTokens(user);
+
+    return ResponseHelper.success(tokens, 'Token refreshed successfully.');
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const user = await this.userRepository.findOne({
+      where: { email: dto.email.toLowerCase() },
+    });
+
+    if (!user) {
+      return ResponseHelper.success(
+        null,
+        'If your email is registered, a password reset OTP has been sent.',
+      );
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpKey = `pwd_reset:${user.id}`;
+    await this.redisCache.set(otpKey, otp, this.OTP_TTL);
+
+    try {
+      await this.mailProvider.sendMail({
+        to: user.email,
+        subject: 'FX Trading - Password Reset',
+        html: `
+          <h2>Password Reset Request</h2>
+          <p>Hello ${user.firstName},</p>
+          <p>Your password reset OTP is:</p>
+          <h1 style="letter-spacing: 8px; font-size: 32px; color: #333;">${otp}</h1>
+          <p>This code expires in 10 minutes.</p>
+          <p>If you did not request this, please ignore this email.</p>
+        `,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to send reset OTP email to ${user.email}`,
+        (error as Error).stack,
+      );
+    }
+
+    return ResponseHelper.success(
+      null,
+      'If your email is registered, a password reset OTP has been sent.',
+    );
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const user = await this.userRepository.findOne({
+      where: { email: dto.email.toLowerCase() },
+    });
+
+    if (!user) {
+      throw new InvalidOtpException();
+    }
+
+    const otpKey = `pwd_reset:${user.id}`;
+    const storedOtp = await this.redisCache.get(otpKey);
+
+    if (!storedOtp) {
+      throw new OtpExpiredException();
+    }
+
+    if (storedOtp !== dto.otp) {
+      throw new InvalidOtpException();
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, this.SALT_ROUNDS);
+    user.passwordHash = passwordHash;
+    user.refreshTokenHash = null;
+
+    await this.userRepository.save(user);
+    await this.redisCache.del(otpKey);
+
+    return ResponseHelper.success(
+      null,
+      'Password has been reset successfully. You can now log in.',
+    );
+  }
+
+  private async generateTokens(
+    user: User,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
       isVerified: user.isVerified,
     };
 
-    return this.jwtService.sign(payload);
+    const accessTokenSecret = this.configService.get<string>('jwt.secret');
+    const accessTokenExp = this.configService.get<number>('jwt.expiration');
+
+    const refreshTokenSecret =
+      this.configService.get<string>('jwt.refreshSecret');
+    const refreshTokenExp = this.configService.get<number>(
+      'jwt.refreshExpiration',
+    );
+
+    const [accessToken, refreshToken] = await Promise.all([
+      this.jwtService.signAsync(payload, {
+        secret: accessTokenSecret,
+        expiresIn: accessTokenExp,
+      }),
+      this.jwtService.signAsync(payload, {
+        secret: refreshTokenSecret,
+        expiresIn: refreshTokenExp,
+      }),
+    ]);
+
+    const refreshTokenHash = await bcrypt.hash(refreshToken, this.SALT_ROUNDS);
+    await this.userRepository.update(user.id, { refreshTokenHash });
+
+    return { accessToken, refreshToken };
   }
 
   private async seedWalletBalances(userId: string): Promise<void> {
