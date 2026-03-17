@@ -2,6 +2,7 @@ import { Column, Entity, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { WalletBalance } from '../../wallet/entities/wallet-balance.entity';
 import { Transaction } from '../../transactions/entities/transaction.entity';
+import { Role } from '../../../common/enums';
 
 @Entity('users')
 export class User extends BaseEntity {
@@ -19,6 +20,9 @@ export class User extends BaseEntity {
 
   @Column({ name: 'is_verified', default: false })
   isVerified: boolean;
+
+  @Column({ type: 'enum', enum: Role, default: Role.USER })
+  role: Role;
 
   @OneToMany(() => WalletBalance, (wallet) => wallet.user)
   walletBalances: WalletBalance[];

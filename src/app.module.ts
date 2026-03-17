@@ -15,6 +15,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 import { FxModule } from './modules/fx/fx.module';
+import { AdminModule } from './modules/admin/admin.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { FxModule } from './modules/fx/fx.module';
     WalletModule,
     TransactionsModule,
     FxModule,
+    AdminModule,
   ],
   providers: [
     {

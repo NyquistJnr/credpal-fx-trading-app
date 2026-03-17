@@ -5,11 +5,13 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../entities/user.entity';
+import { Role } from '../../../common/enums';
 
 export interface JwtPayload {
   sub: string;
   email: string;
   isVerified: boolean;
+  role: Role;
 }
 
 @Injectable()

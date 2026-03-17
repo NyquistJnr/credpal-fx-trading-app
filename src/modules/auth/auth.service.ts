@@ -26,7 +26,7 @@ import {
 } from '../../common/filters/business-exception';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { ResponseHelper } from '../../common/helpers/response.helper';
-import { SUPPORTED_CURRENCIES } from '../../common/enums';
+import { SUPPORTED_CURRENCIES, Role } from '../../common/enums';
 import { ConfigService } from '@nestjs/config';
 
 @Injectable()
@@ -63,6 +63,7 @@ export class AuthService {
       firstName: dto.firstName,
       lastName: dto.lastName,
       isVerified: false,
+      role: Role.USER,
     });
 
     await this.walletBalanceRepository.seedForUser(
@@ -122,7 +123,6 @@ export class AuthService {
     await this.redisCache.del(otpKey);
     await this.redisCache.del(attemptsKey);
 
-    // Reload user to get updated isVerified flag for token payload
     user.isVerified = true;
 
     const { accessToken, refreshToken } = await this.generateTokens(user);
@@ -138,6 +138,7 @@ export class AuthService {
           firstName: user.firstName,
           lastName: user.lastName,
           isVerified: user.isVerified,
+          role: user.role,
         },
         walletBalances: balances,
       },
@@ -194,6 +195,7 @@ export class AuthService {
           firstName: user.firstName,
           lastName: user.lastName,
           isVerified: user.isVerified,
+          role: user.role,
         },
         walletBalances: balances,
       },
@@ -316,8 +318,6 @@ export class AuthService {
     );
   }
 
-  // ── Private helpers ──────────────────────────────────────────────
-
   private async generateAndSendOtp(user: User): Promise<void> {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpKey = `otp:${user.id}`;
@@ -352,6 +352,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       isVerified: user.isVerified,
+      role: user.role,
     };
 
     const accessTokenSecret = this.configService.get<string>('jwt.secret');
