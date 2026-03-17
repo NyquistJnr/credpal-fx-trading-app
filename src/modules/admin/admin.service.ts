@@ -4,6 +4,7 @@ import { WalletBalanceRepository } from '../wallet/repositories/wallet-balance.r
 import { TransactionRepository } from '../transactions/repositories/transaction.repository';
 import { ResponseHelper } from '../../common/helpers/response.helper';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
+import { TransactionQueryDto } from '../transactions/dto';
 import { Role } from '../../common/enums';
 import { BusinessException } from '../../common/filters/business-exception';
 import { HttpStatus } from '@nestjs/common';
@@ -132,6 +133,44 @@ export class AdminService {
         newRole,
       },
       `User role updated to ${newRole} successfully.`,
+    );
+  }
+
+  async getUserTransactions(userId: string, query: TransactionQueryDto) {
+    const user = await this.userRepository.findById(userId);
+
+    if (!user) {
+      throw new BusinessException(
+        `User ${userId} not found.`,
+        'USER_NOT_FOUND',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    const { page, limit } = query;
+
+    const [transactions, totalItems] =
+      await this.transactionRepository.findPaginated(userId, query);
+
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const formatted = transactions.map((tx) => ({
+      id: tx.id,
+      type: tx.type,
+      status: tx.status,
+      fromCurrency: tx.fromCurrency,
+      toCurrency: tx.toCurrency,
+      fromAmount: tx.fromAmount ? Number(tx.fromAmount) : null,
+      toAmount: Number(tx.toAmount),
+      rateUsed: tx.rateUsed ? Number(tx.rateUsed) : null,
+      description: tx.description,
+      createdAt: tx.createdAt,
+    }));
+
+    return ResponseHelper.paginated(
+      formatted,
+      { page, limit, totalItems, totalPages },
+      `Transactions for user ${user.email} retrieved successfully.`,
     );
   }
 

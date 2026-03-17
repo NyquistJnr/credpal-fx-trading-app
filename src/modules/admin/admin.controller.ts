@@ -23,6 +23,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
+import { TransactionQueryDto } from '../transactions/dto';
 
 @ApiTags('Admin')
 @ApiBearerAuth()
@@ -59,6 +60,19 @@ export class AdminController {
   @ApiResponse({ status: 404, description: 'User not found' })
   async getUserById(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.getUserById(id);
+  }
+
+  @Get('users/:id/transactions')
+  @ApiOperation({
+    summary: "Get a specific user's transactions with filters (Admin only)",
+  })
+  @ApiResponse({ status: 200, description: 'User transactions retrieved' })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  async getUserTransactions(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: TransactionQueryDto,
+  ) {
+    return this.adminService.getUserTransactions(id, query);
   }
 
   @Patch('users/:id/role')
