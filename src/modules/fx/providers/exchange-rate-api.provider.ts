@@ -4,6 +4,7 @@ import {
   FxRateProvider,
   FxRateMap,
 } from '../interfaces/fx-rate-provider.interface';
+import { withRetry } from '../../../common/utils/retry.util';
 
 @Injectable()
 export class ExchangeRateApiProvider extends FxRateProvider {
@@ -26,30 +27,36 @@ export class ExchangeRateApiProvider extends FxRateProvider {
       `Fetching FX rates for ${baseCurrency} from ExchangeRate API`,
     );
 
-    try {
-      const response = await fetch(url);
+    return withRetry(
+      async () => {
+        const response = await fetch(url);
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (data.result !== 'success') {
-        throw new Error(`API error: ${data['error-type'] ?? 'Unknown error'}`);
-      }
+        if (data.result !== 'success') {
+          throw new Error(
+            `API error: ${data['error-type'] ?? 'Unknown error'}`,
+          );
+        }
 
-      this.logger.log(
-        `Successfully fetched ${Object.keys(data.conversion_rates).length} rates for ${baseCurrency}`,
-      );
+        this.logger.log(
+          `Successfully fetched ${Object.keys(data.conversion_rates).length} rates for ${baseCurrency}`,
+        );
 
-      return data.conversion_rates as FxRateMap;
-    } catch (error) {
-      this.logger.error(
-        `Failed to fetch FX rates for ${baseCurrency}: ${(error as Error).message}`,
-      );
-      throw error;
-    }
+        return data.conversion_rates as FxRateMap;
+      },
+      {
+        maxAttempts: 3,
+        baseDelayMs: 200,
+        backoffFactor: 2,
+        logger: this.logger,
+        label: `FX rate fetch (${baseCurrency})`,
+      },
+    );
   }
 
   getProviderName(): string {

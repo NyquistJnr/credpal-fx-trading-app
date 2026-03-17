@@ -29,7 +29,8 @@ export class TradeCurrencyHandler implements ICommandHandler<
 
     if (fromCurrency !== Currency.NGN && toCurrency !== Currency.NGN) {
       throw new BusinessException(
-        'Trades must involve NGN on at least one side. Use convert for cross-currency exchanges.',
+        `Trades are limited to NGN pairs (e.g. NGN → ${fromCurrency} or ${toCurrency} → NGN). ` +
+          `To exchange ${fromCurrency} → ${toCurrency} directly, use POST /wallet/convert instead.`,
         'TRADE_NGN_REQUIRED',
       );
     }

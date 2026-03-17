@@ -1,6 +1,7 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Inject } from '@nestjs/common';
+import { DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { generateSecureOtp } from '../../common/utils/crypto.util';
 import { User } from './entities/user.entity';
@@ -27,8 +28,9 @@ import {
 } from '../../common/filters/business-exception';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { ResponseHelper } from '../../common/helpers/response.helper';
-import { SUPPORTED_CURRENCIES, Role } from '../../common/enums';
+import { SUPPORTED_CURRENCIES, Role, Currency } from '../../common/enums';
 import { ConfigService } from '@nestjs/config';
+import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
 
 @Injectable()
 export class AuthService {
@@ -44,6 +46,7 @@ export class AuthService {
     private readonly walletBalanceRepository: WalletBalanceRepository,
     private readonly jwtService: JwtService,
     private readonly redisCache: RedisCacheService,
+    private readonly dataSource: DataSource,
     @Inject(MAIL_PROVIDER)
     private readonly mailProvider: MailProvider,
     private readonly configService: ConfigService,
@@ -58,28 +61,47 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, this.SALT_ROUNDS);
 
-    const user = await this.userRepository.create({
-      email: dto.email.toLowerCase(),
-      passwordHash,
-      firstName: dto.firstName,
-      lastName: dto.lastName,
-      isVerified: false,
-      role: Role.USER, // All users will be user by default, for now it's to just switch the role value in the DB, later will implement a seeded admin, will come back here!
-    });
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    await this.walletBalanceRepository.seedForUser(
-      user.id,
-      SUPPORTED_CURRENCIES,
-    );
-    await this.generateAndSendOtp(user);
+    try {
+      const user = queryRunner.manager.create(User, {
+        email: dto.email.toLowerCase(),
+        passwordHash,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        isVerified: false,
+        role: Role.USER,
+      });
 
-    return ResponseHelper.success(
-      {
-        userId: user.id,
-        email: user.email,
-      },
-      'Registration successful. Please check your email for OTP verification.',
-    );
+      const savedUser = await queryRunner.manager.save(user);
+
+      const wallets = SUPPORTED_CURRENCIES.map((currency: Currency) =>
+        queryRunner.manager.create(WalletBalance, {
+          userId: savedUser.id,
+          currency,
+          balance: 0,
+        }),
+      );
+
+      await queryRunner.manager.save(wallets);
+      await queryRunner.commitTransaction();
+      await this.generateAndSendOtp(savedUser);
+
+      return ResponseHelper.success(
+        {
+          userId: savedUser.id,
+          email: savedUser.email,
+        },
+        'Registration successful. Please check your email for OTP verification.',
+      );
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async verifyOtp(dto: VerifyOtpDto) {
