@@ -27,7 +27,7 @@ async function bootstrap() {
   app.enableCors();
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle('FX Trading API')
+    .setTitle('CredPal FX Trading API')
     .setDescription('Backend API for FX currency trading application')
     .setVersion('1.0')
     .addBearerAuth()

@@ -34,7 +34,7 @@ export class RolesGuard implements CanActivate {
 
     if (!hasRole) {
       throw new ForbiddenException(
-        `This action requires one of the following roles: ${requiredRoles.join(', ')}`,
+        `This action requires you to have these roles: ${requiredRoles.join(', ')}`,
       );
     }
 

@@ -10,6 +10,7 @@ import {
   fxConfig,
   redisConfig,
 } from './config';
+import { DomainEventsModule } from './common/events';
 import { RedisCacheModule } from './common/services/redis-cache.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { WalletModule } from './modules/wallet/wallet.module';
@@ -47,7 +48,11 @@ import { AdminModule } from './modules/admin/admin.module';
       },
     ]),
 
+    // Infrastructure
+    DomainEventsModule,
     RedisCacheModule,
+
+    // Feature modules
     AuthModule,
     WalletModule,
     TransactionsModule,

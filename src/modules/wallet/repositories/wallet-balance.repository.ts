@@ -32,10 +32,6 @@ export class WalletBalanceRepository extends BaseRepository<WalletBalance> {
     });
   }
 
-  /**
-   * Get wallet balance with pessimistic write lock inside a transaction.
-   * Use this for any operation that modifies the balance.
-   */
   async findWithLock(
     queryRunner: QueryRunner,
     userId: string,
@@ -49,10 +45,6 @@ export class WalletBalanceRepository extends BaseRepository<WalletBalance> {
       .getOne();
   }
 
-  /**
-   * Get or create a wallet balance row, with pessimistic lock.
-   * Ensures the row exists before any credit operation.
-   */
   async findOrCreateWithLock(
     queryRunner: QueryRunner,
     userId: string,
@@ -72,17 +64,6 @@ export class WalletBalanceRepository extends BaseRepository<WalletBalance> {
     return wallet;
   }
 
-  /**
-   * Debit a wallet balance within a transaction.
-   *
-   * Defence-in-depth against negative balances:
-   *   1. Application-level check (DecimalUtil.lt) — fast, catches most cases.
-   *   2. Post-subtraction assertion — catches any rounding edge case.
-   *   3. DB CHECK constraint on the column — ultimate safety net if (1) and (2)
-   *      are somehow bypassed by a concurrent commit.
-   *
-   * Returns the updated wallet entity (already saved to the query runner).
-   */
   async debitWithGuard(
     queryRunner: QueryRunner,
     wallet: WalletBalance,
@@ -100,10 +81,6 @@ export class WalletBalanceRepository extends BaseRepository<WalletBalance> {
     return wallet;
   }
 
-  /**
-   * Credit a wallet balance within a transaction.
-   * Returns the updated wallet entity (already saved to the query runner).
-   */
   async creditWithSave(
     queryRunner: QueryRunner,
     wallet: WalletBalance,
@@ -114,9 +91,6 @@ export class WalletBalanceRepository extends BaseRepository<WalletBalance> {
     return wallet;
   }
 
-  /**
-   * Seed all supported currency wallets for a new user.
-   */
   async seedForUser(
     userId: string,
     currencies: Currency[],
@@ -130,9 +104,6 @@ export class WalletBalanceRepository extends BaseRepository<WalletBalance> {
     return this.createMany(wallets);
   }
 
-  /**
-   * Build a balance map { currency: amount } for a user.
-   */
   async getBalanceMap(userId: string): Promise<Record<string, number>> {
     const balances = await this.findByUserId(userId);
     const map: Record<string, number> = {};
