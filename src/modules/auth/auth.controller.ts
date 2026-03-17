@@ -20,7 +20,6 @@ import {
   VerifyOtpDto,
   LoginDto,
   ResendOtpDto,
-  RefreshTokenDto,
   ForgotPasswordDto,
   ResetPasswordDto,
 } from './dto';
