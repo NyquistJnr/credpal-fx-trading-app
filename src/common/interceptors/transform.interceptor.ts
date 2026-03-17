@@ -11,15 +11,26 @@ export class TransformInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     return next.handle().pipe(
       map((data) => {
-        if (data && typeof data === 'object' && 'success' in data) {
+        if (this.isStandardEnvelope(data)) {
           return data;
         }
+
         return {
           success: true,
           data,
           timestamp: new Date().toISOString(),
         };
       }),
+    );
+  }
+
+  private isStandardEnvelope(data: unknown): boolean {
+    return (
+      data !== null &&
+      typeof data === 'object' &&
+      'success' in data &&
+      'timestamp' in data &&
+      'data' in data
     );
   }
 }

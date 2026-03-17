@@ -13,6 +13,7 @@ import { ConvertCurrencyHandler } from './handlers/convert-currency.handler';
 import { TradeCurrencyHandler } from './handlers/trade-currency.handler';
 import { GetBalancesHandler } from './handlers/get-balances.handler';
 import { IdempotencyService } from './services/idempotency.service';
+import { CurrencyExchangeExecutor } from './services/currency-exchange.executor';
 import { WalletEventListeners } from './events/wallet-event.listeners';
 
 @Module({
@@ -20,17 +21,14 @@ import { WalletEventListeners } from './events/wallet-event.listeners';
   controllers: [WalletController],
   providers: [
     WalletService,
-
     FundWalletHandler,
     ConvertCurrencyHandler,
     TradeCurrencyHandler,
-
     GetBalancesHandler,
-
+    CurrencyExchangeExecutor,
     IdempotencyService,
     WalletBalanceRepository,
     TransactionRepository,
-
     WalletEventListeners,
   ],
   exports: [WalletService, WalletBalanceRepository],
