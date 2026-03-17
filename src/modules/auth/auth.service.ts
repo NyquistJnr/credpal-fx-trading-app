@@ -16,6 +16,8 @@ import {
 } from '../../common/filters/business-exception';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { ResponseHelper } from '../../common/helpers/response.helper';
+import { WalletBalance } from '../wallet/entities/wallet-balance.entity';
+import { SUPPORTED_CURRENCIES, Currency } from '../../common/enums';
 
 @Injectable()
 export class AuthService {
@@ -29,6 +31,8 @@ export class AuthService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(WalletBalance)
+    private readonly walletRepository: Repository<WalletBalance>,
     private readonly jwtService: JwtService,
     private readonly redisCache: RedisCacheService,
     @Inject(MAIL_PROVIDER)
@@ -58,7 +62,7 @@ export class AuthService {
     });
 
     await this.userRepository.save(user);
-
+    await this.seedWalletBalances(user.id);
     await this.generateAndSendOtp(user);
 
     return ResponseHelper.success(
@@ -112,11 +116,11 @@ export class AuthService {
 
     user.isVerified = true;
     await this.userRepository.save(user);
-
     await this.redisCache.del(otpKey);
     await this.redisCache.del(attemptsKey);
 
     const token = this.generateToken(user);
+    const balances = await this.getUserBalances(user.id);
 
     return ResponseHelper.success(
       {
@@ -128,6 +132,7 @@ export class AuthService {
           lastName: user.lastName,
           isVerified: user.isVerified,
         },
+        walletBalances: balances,
       },
       'Email verified successfully.',
     );
@@ -172,6 +177,7 @@ export class AuthService {
     }
 
     const token = this.generateToken(user);
+    const balances = await this.getUserBalances(user.id);
 
     return ResponseHelper.success(
       {
@@ -183,6 +189,7 @@ export class AuthService {
           lastName: user.lastName,
           isVerified: user.isVerified,
         },
+        walletBalances: balances,
       },
       'Login successful.',
     );
@@ -251,5 +258,31 @@ export class AuthService {
     };
 
     return this.jwtService.sign(payload);
+  }
+
+  private async seedWalletBalances(userId: string): Promise<void> {
+    const wallets = SUPPORTED_CURRENCIES.map((currency) =>
+      this.walletRepository.create({
+        userId,
+        currency,
+        balance: 0,
+      }),
+    );
+    await this.walletRepository.save(wallets);
+  }
+
+  private async getUserBalances(
+    userId: string,
+  ): Promise<Record<string, number>> {
+    const balances = await this.walletRepository.find({
+      where: { userId },
+      order: { currency: 'ASC' },
+    });
+
+    const balanceMap: Record<string, number> = {};
+    for (const balance of balances) {
+      balanceMap[balance.currency] = Number(balance.balance);
+    }
+    return balanceMap;
   }
 }
