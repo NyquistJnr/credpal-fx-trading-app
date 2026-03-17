@@ -40,7 +40,6 @@ describe('App (e2e)', () => {
         .get('/api/v1/health')
         .expect(200);
 
-      // Response is wrapped by TransformInterceptor: { success, data: { ... } }
       expect(res.body.success).toBe(true);
 
       const health = res.body.data;
